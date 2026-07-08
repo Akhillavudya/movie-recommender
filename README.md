@@ -3,7 +3,7 @@
 A content-based movie recommender that suggests **5 similar films** from any chosen title using
 NLP tag vectors and cosine similarity over **4,806 movies**. Built with Python, scikit-learn and Streamlit.
 
-**Live demo:** _add your Streamlit Cloud URL here after deploying_
+**Live demo:** https://movie-recommender-2431.streamlit.app/
 
 ![Demo — The Dark Knight recommendations](docs/demo.png)
 
