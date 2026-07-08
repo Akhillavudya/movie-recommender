@@ -1,15 +1,19 @@
 import time
 
+import numpy as np
 import pandas as pd
 import pickle
 import requests
 import streamlit as st
+from requests.adapters import HTTPAdapter
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from urllib3.util.retry import Retry
 
 st.set_page_config(page_title="Movie Recommender", page_icon="🎬", layout="wide")
 
-PLACEHOLDER_POSTER = "https://via.placeholder.com/500x750.png?text=No+Poster"
+# Self-contained grey placeholder (no network) shown when a poster can't be fetched.
+PLACEHOLDER_POSTER = np.full((750, 500, 3), 40, dtype=np.uint8)
 
 
 @st.cache_data(show_spinner=False)
@@ -38,40 +42,48 @@ def get_tmdb_api_key():
         return None
 
 
+@st.cache_resource(show_spinner=False)
+def get_session():
+    """A pooled HTTP session; keep-alive + retries make TMDB calls reliable."""
+    session = requests.Session()
+    retry = Retry(total=5, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    return session
+
+
 @st.cache_data(show_spinner=False)
 def fetch_poster(movie_id, api_key):
     """Fetch a movie poster URL from TMDB. Falls back to a placeholder on failure."""
     if not api_key:
         return PLACEHOLDER_POSTER
-    try:
-        resp = requests.get(
-            f"https://api.themoviedb.org/3/movie/{movie_id}",
-            params={"api_key": api_key, "language": "en-US"},
-            timeout=5,
-        )
-        resp.raise_for_status()
-        poster_path = resp.json().get("poster_path")
-        if poster_path:
-            return f"https://image.tmdb.org/t/p/w500{poster_path}"
-    except requests.RequestException:
-        pass
+    session = get_session()
+    for attempt in range(5):
+        try:
+            resp = session.get(
+                f"https://api.themoviedb.org/3/movie/{movie_id}",
+                params={"api_key": api_key, "language": "en-US"},
+                timeout=8,
+            )
+            resp.raise_for_status()
+            poster_path = resp.json().get("poster_path")
+            if poster_path:
+                return f"https://image.tmdb.org/t/p/w500{poster_path}"
+            return PLACEHOLDER_POSTER
+        except requests.RequestException:
+            if attempt < 4:
+                time.sleep(0.5)
     return PLACEHOLDER_POSTER
 
 
-def recommend(movie, movies, similarity, api_key):
-    """Return the top-5 most similar movies (title + poster URL) to `movie`."""
+def recommend(movie, movies, similarity):
+    """Rank the top-5 most similar movies to `movie` (title + TMDB id). Fast, no network."""
     matches = movies.index[movies["title"] == movie].tolist()
     if not matches:
         return []
     movie_index = matches[0]
     distances = similarity[movie_index]
     movies_list = sorted(enumerate(distances), reverse=True, key=lambda x: x[1])[1:6]
-
-    results = []
-    for index, _ in movies_list:
-        row = movies.iloc[index]
-        results.append((row["title"], fetch_poster(row["movie_id_x"], api_key)))
-    return results
+    return [(movies.iloc[i].title, movies.iloc[i].movie_id_x) for i, _ in movies_list]
 
 
 movies = load_movies()
@@ -88,15 +100,15 @@ selected_movie_name = st.selectbox("Select a movie", movies["title"].values)
 
 if st.button("Recommend", type="primary"):
     start = time.perf_counter()
-    recommendations = recommend(selected_movie_name, movies, similarity, api_key)
+    recommendations = recommend(selected_movie_name, movies, similarity)
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     if not recommendations:
         st.warning("Sorry, no recommendations found for that title.")
     else:
-        st.write(f"Recommended in **{elapsed_ms:.0f} ms**")
+        st.write(f"Recommended in **{elapsed_ms:.1f} ms**")
         columns = st.columns(5)
-        for column, (title, poster) in zip(columns, recommendations):
+        for column, (title, movie_id) in zip(columns, recommendations):
             with column:
-                st.image(poster, use_container_width=True)
+                st.image(fetch_poster(movie_id, api_key), use_container_width=True)
                 st.markdown(f"**{title}**")

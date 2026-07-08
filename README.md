@@ -5,8 +5,7 @@ NLP tag vectors and cosine similarity over **4,806 movies**. Built with Python, 
 
 **Live demo:** _add your Streamlit Cloud URL here after deploying_
 
-![Demo screenshot](docs/demo.png)
-<!-- Capture a screenshot of the poster grid (e.g. "Avatar" → results) and save it to docs/demo.png -->
+![Demo — The Dark Knight recommendations](docs/demo.png)
 
 ## How it works
 
