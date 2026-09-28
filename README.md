@@ -1,66 +1,53 @@
-# 🎬 Movie Recommender — NLP Content-Based Engine
+﻿# Movie Recommendation System — Capstone
 
-A content-based movie recommender that suggests **5 similar films** from any chosen title using
-NLP tag vectors and cosine similarity over **4,806 movies**. Built with Python, scikit-learn and Streamlit.
+Content-based recommendations using the supplied capstone data: **45,206 movies**, top 3 actors, director, genres and plot keywords. Select a movie to receive up to **10 similar movies**, with cosine scores and shared metadata.
 
-**Live demo:** https://movie-recommender-2431.streamlit.app/
+## Run
 
-![Demo — The Dark Knight recommendations](docs/demo.png)
+On Windows, `powershell -ExecutionPolicy Bypass -File .\run.ps1` installs requirements and starts the app in the same project environment. This avoids missing packages when a global `streamlit` command uses a different Python installation.
 
-## How it works
-
-1. **Feature engineering** — each movie is described by a `tags` document built from its overview,
-   genres, keywords, top-3 cast and director, then lowercased and Porter-stemmed.
-2. **Vectorization** — `CountVectorizer(max_features=5000, stop_words='english')` turns each movie's
-   tags into a bag-of-words vector.
-3. **Similarity** — cosine similarity between every pair of vectors (a 4806×4806 matrix, recomputed
-   at startup) ranks the most similar movies; the app returns the top 5 with posters from the TMDB API.
-
-The full pipeline is documented and reproducible in [`notebook.ipynb`](notebook.ipynb), which also
-compares `CountVectorizer` vs `TF-IDF`.
-
-## Tech stack
-
-Python · scikit-learn (`CountVectorizer`, `cosine_similarity`) · pandas · Streamlit · TMDB API
-
-## Run locally
-
-```bash
-git clone <your-repo-url>
-cd Movie_Project
-python -m venv venv
-venv\Scripts\activate        # Windows  (source venv/bin/activate on macOS/Linux)
-pip install -r requirements.txt
-streamlit run app.py
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+.\venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-The similarity matrix is computed from `tags` on first load (~3 s, then cached), so no large
-model file is needed.
+The prepared `data/movies.json` is included, so the app does not need the original CSVs or a training step. On a new machine, create an environment with `python -m venv venv` first. Posters are optional: copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and configure `TMDB_API_KEY`.
 
-### TMDB posters (optional)
+## Alignment with the problem statement
 
-Posters come from the free [TMDB API](https://www.themoviedb.org/settings/api). Without a key the
-app still works and shows placeholder images.
+| Requirement | Implementation |
+|---|---|
+| Supplied movie metadata | `movies_metadata.csv` + `credits.csv` + `keywords.csv`, joined on TMDB ID |
+| Parse stringified lists | Safe `ast.literal_eval`; malformed/missing lists become empty lists |
+| Top 3 actors | First 3 cast entries |
+| Director | Crew entries whose job is `Director` |
+| Genres and plot keywords | Extract each list's `name` values |
+| Clean and normalize | Lowercase, remove entity whitespace, remove duplicate tokens and movie IDs |
+| Tags | Actors + director + genres + keywords |
+| Vectorization | CountVectorizer, sparse feature matrix |
+| Cosine similarity | Compute the selected movie's matrix row on demand |
+| Top 10 similar movies | Descending similarity, exclude selected ID; omit zero-overlap results |
+| Visualizations | Genre bar chart, keyword word cloud, actor counts, 10-movie similarity heatmap |
 
-- **Locally:** copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and set your key.
-- **On Streamlit Cloud:** add `TMDB_API_KEY` under **Settings → Secrets**.
+The brief calls the movie file `movies.csv`, but the supplied equivalent is `movies_metadata.csv`; keywords are provided separately. `ratings*.csv` and `links*.csv` are not required for this content-based scope. No collaborative filtering or account system is needed.
 
-The key is read via `st.secrets["TMDB_API_KEY"]` and is never committed.
+## Rebuild from the supplied data
 
-## Deploy
-
-Deploys free on [Streamlit Community Cloud](https://share.streamlit.io): connect this GitHub repo,
-set the main file to `app.py`, add the `TMDB_API_KEY` secret, and deploy. First boot recomputes the
-similarity matrix (cached thereafter).
-
-## Project structure
-
-```
-app.py             # Streamlit app: recompute similarity, recommend, poster grid
-notebook.ipynb     # Reproducible training pipeline (features → vectorize → similarity)
-movies_dict.pkl    # 4,806 movies: movie_id_x, title, pre-stemmed tags
-requirements.txt   # Pinned dependencies
+```powershell
+.\venv\Scripts\python.exe recommender.py "C:\path\to\Data"
 ```
 
-> `similarity.pkl` is intentionally **not** committed — the 184 MB matrix is recomputed from `tags`
-> at runtime, keeping the repo lightweight.
+Invalid IDs and missing titles are excluded; duplicate IDs retain the first row. Movies with partial metadata remain usable; movies with no usable tags are excluded. See `data/preprocessing_report.json` for counts. Duplicate titles are distinguished by year and ID in the app.
+
+`notebook.ipynb` documents and runs the pipeline, sample recommendations, comparison with TF-IDF, and all four charts. Set `DATA_DIR` there to rebuild from raw files, or use the included catalogue. The runtime computes a single similarity row because a dense 45,206-square matrix would use about 16 GB; the notebook explicitly builds a small similarity matrix for the heatmap.
+
+## Files
+
+- `app.py`: existing Streamlit interface, expanded to 10 recommendations and dataset analysis.
+- `recommender.py`: reproducible preprocessing and shared model.
+- `analysis_charts.py`: required matplotlib/seaborn/wordcloud figures.
+- `notebook.ipynb`: capstone walkthrough.
+- `data/movies.json`: processed supplied dataset.
+- `tests/test_recommender.py`: preprocessing and recommendation checks.
+
+The old `movies_dict.pkl` and local `similarity.pkl` are legacy artifacts and are no longer loaded. The previous live deployment has not been updated by these local changes. Similarity is metadata overlap, not a predicted rating or measured recommendation accuracy. Unavailable metadata and spelling variants can affect results.

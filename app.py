@@ -1,114 +1,74 @@
-import time
+﻿import time
 
+import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import pickle
 import requests
 import streamlit as st
-from requests.adapters import HTTPAdapter
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from urllib3.util.retry import Retry
+
+from analysis_charts import make_charts
+from recommender import CATALOGUE, build_vectors, load_movies, recommend
 
 st.set_page_config(page_title="Movie Recommender", page_icon="🎬", layout="wide")
-
-# Self-contained grey placeholder (no network) shown when a poster can't be fetched.
 PLACEHOLDER_POSTER = np.full((750, 500, 3), 40, dtype=np.uint8)
 
 
-@st.cache_data(show_spinner=False)
-def load_movies():
-    """Load the movie catalogue (title, TMDB id, pre-stemmed NLP tags)."""
-    movies_dict = pickle.load(open("movies_dict.pkl", "rb"))
-    return pd.DataFrame(movies_dict)
-
-
-@st.cache_resource(show_spinner="Building the similarity model...")
-def build_similarity(tags):
-    """Vectorize tags and compute the cosine-similarity matrix once, at startup.
-
-    Replaces the shipped 184 MB similarity.pkl: recomputing from `tags` keeps the
-    repo lightweight and makes the NLP pipeline visible instead of a frozen binary.
-    """
-    vectors = CountVectorizer(max_features=5000, stop_words="english").fit_transform(tags).toarray()
-    return cosine_similarity(vectors)
-
-
-def get_tmdb_api_key():
-    """Read the TMDB API key from Streamlit secrets, if configured."""
-    try:
-        return st.secrets["TMDB_API_KEY"]
-    except Exception:
-        return None
-
-
-@st.cache_resource(show_spinner=False)
-def get_session():
-    """A pooled HTTP session; keep-alive + retries make TMDB calls reliable."""
-    session = requests.Session()
-    retry = Retry(total=5, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
-    session.mount("https://", HTTPAdapter(max_retries=retry))
-    return session
+@st.cache_resource(show_spinner="Loading movie metadata...")
+def load_model(version):
+    movies = load_movies()
+    return movies, build_vectors(movies)
 
 
 @st.cache_data(show_spinner=False)
 def fetch_poster(movie_id, api_key):
-    """Fetch a movie poster URL from TMDB. Falls back to a placeholder on failure."""
-    if not api_key:
-        return PLACEHOLDER_POSTER
-    session = get_session()
-    for attempt in range(5):
+    if api_key:
         try:
-            resp = session.get(
-                f"https://api.themoviedb.org/3/movie/{movie_id}",
-                params={"api_key": api_key, "language": "en-US"},
-                timeout=8,
-            )
-            resp.raise_for_status()
-            poster_path = resp.json().get("poster_path")
-            if poster_path:
-                return f"https://image.tmdb.org/t/p/w500{poster_path}"
-            return PLACEHOLDER_POSTER
-        except requests.RequestException:
-            if attempt < 4:
-                time.sleep(0.5)
+            response = requests.get(f"https://api.themoviedb.org/3/movie/{movie_id}", params={"api_key": api_key}, timeout=3)
+            response.raise_for_status()
+            poster = response.json().get("poster_path")
+            if poster:
+                return f"https://image.tmdb.org/t/p/w500{poster}"
+        except (requests.RequestException, ValueError):
+            pass
     return PLACEHOLDER_POSTER
 
 
-def recommend(movie, movies, similarity):
-    """Rank the top-5 most similar movies to `movie` (title + TMDB id). Fast, no network."""
-    matches = movies.index[movies["title"] == movie].tolist()
-    if not matches:
-        return []
-    movie_index = matches[0]
-    distances = similarity[movie_index]
-    movies_list = sorted(enumerate(distances), reverse=True, key=lambda x: x[1])[1:6]
-    return [(movies.iloc[i].title, movies.iloc[i].movie_id_x) for i, _ in movies_list]
-
-
-movies = load_movies()
-similarity = build_similarity(movies["tags"])
-api_key = get_tmdb_api_key()
-
 st.title("🎬 Movie Recommender System")
-st.caption("Pick a film you like and get 5 similar recommendations, powered by NLP tag similarity.")
+st.caption("Find 10 similar films using their top 3 actors, director, genres and plot keywords.")
+if not CATALOGUE.exists():
+    st.error('Prepare the dataset first: python recommender.py "path/to/Data"')
+    st.stop()
+movies, vectors = load_model(CATALOGUE.stat().st_mtime_ns)
+try:
+    api_key = st.secrets.get("TMDB_API_KEY")
+except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
+    api_key = None
 
-if not api_key:
-    st.info("Add a TMDB API key in **Settings → Secrets** to show real posters. Showing placeholders for now.")
-
-selected_movie_name = st.selectbox("Select a movie", movies["title"].values)
-
-if st.button("Recommend", type="primary"):
-    start = time.perf_counter()
-    recommendations = recommend(selected_movie_name, movies, similarity)
-    elapsed_ms = (time.perf_counter() - start) * 1000
-
-    if not recommendations:
-        st.warning("Sorry, no recommendations found for that title.")
-    else:
-        st.write(f"Recommended in **{elapsed_ms:.1f} ms**")
-        columns = st.columns(5)
-        for column, (title, movie_id) in zip(columns, recommendations):
-            with column:
-                st.image(fetch_poster(movie_id, api_key), use_container_width=True)
-                st.markdown(f"**{title}**")
+page = st.radio("Explore", ["Recommendations", "Dataset analysis"], horizontal=True)
+if page == "Dataset analysis":
+    st.write(f"{len(movies):,} unique movies from the supplied capstone dataset.")
+    for figure in make_charts(movies, vectors).values():
+        st.pyplot(figure)
+        plt.close(figure)
+else:
+    labels = {int(row.id): f"{row.title} ({row.year}) · {row.id}" for row in movies.itertuples()}
+    selected = st.selectbox("Select a movie", list(labels), format_func=labels.get)
+    source = movies.loc[movies.id == selected].iloc[0]
+    with st.expander("Movie metadata"):
+        for field in ["actors", "director", "genres", "keywords"]:
+            st.write(f"**{field.title()}:** {', '.join(source[field]) or 'Not available'}")
+    if not api_key:
+        st.caption("Posters are optional. Add TMDB_API_KEY in Streamlit secrets to enable them.")
+    if st.button("Recommend", type="primary"):
+        start = time.perf_counter()
+        results = recommend(selected, movies, vectors)
+        st.write(f"Found {len(results)} recommendations in {(time.perf_counter() - start) * 1000:.1f} ms")
+        if results.empty:
+            st.info("No movies share metadata with this title. Try another movie.")
+        for offset in range(0, len(results), 5):
+            for column, row in zip(st.columns(5), results.iloc[offset:offset + 5].itertuples()):
+                with column:
+                    st.image(fetch_poster(row.id, api_key), width="stretch")
+                    st.markdown(f"**{row.title} ({row.year})**")
+                    st.caption(f"Cosine similarity: {row.similarity:.3f}")
+                    shared = [name for field in ["actors", "director", "genres", "keywords"] for name in getattr(row, field) if name in source[field]]
+                    st.caption("Shared: " + (", ".join(dict.fromkeys(shared)) or "Normalized metadata tokens"))
